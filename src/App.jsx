@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from './supabase';
+import Onboarding from './Onboarding';
 import './App.css';
 
-function TabWebview({ profileId, tab, isActive, onUnreadChange, onTitleChange, onUrlChange }) {
+function TabWebview({ profileId, tab, isActive, preloadPath, onUnreadChange, onTitleChange, onUrlChange }) {
   const webviewRef = useRef(null);
   const [initialUrl] = useState(tab.url); // Use initial URL for the src attribute
 
@@ -55,8 +56,11 @@ function TabWebview({ profileId, tab, isActive, onUnreadChange, onTitleChange, o
       ref={webviewRef}
       src={initialUrl}
       partition={`persist:wp_${profileId}`}
+      preload={preloadPath}
       style={{ display: isActive ? 'flex' : 'none', width: '100%', height: '100%' }}
       allowpopups="true"
+      nodeintegration="false"
+      contextisolation="true"
       useragent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     />
   );
@@ -75,9 +79,30 @@ function App() {
   const [session, setSession] = useState(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [userPlan, setUserPlan] = useState(null);
+
+  // ── Onboarding ─────────────────────────────────────────────
+  // "needsOnboarding" = usuário logado mas ainda não fez onboarding
+  const [needsOnboarding, setNeedsOnboarding] = useState(false);
+  const [onboardingChecked, setOnboardingChecked] = useState(false);
+
+  // Modal de cadastro — multi-step
+  const [showRegister, setShowRegister] = useState(false);
+  const [registerStep, setRegisterStep] = useState(1);
+  const [registerLoading, setRegisterLoading] = useState(false);
+  const [registerError, setRegisterError] = useState(null);
+  const [registerSuccess, setRegisterSuccess] = useState(false);
+  const [showRegisterPassword, setShowRegisterPassword] = useState(false);
+  const [registerForm, setRegisterForm] = useState({
+    firstName: '',
+    lastName: '',
+    email: '',
+    whatsapp: '',
+    password: '',
+  });
 
   const [profiles, setProfiles] = useState([]);
   const [activeProfileId, setActiveProfileId] = useState(null);
@@ -85,26 +110,82 @@ function App() {
   const [isAddingProfile, setIsAddingProfile] = useState(false);
   const [unreadStates, setUnreadStates] = useState({});
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [webviewPreloadPath, setWebviewPreloadPath] = useState('');
 
   useEffect(() => {
+    // Buscar o caminho do preload do webview
+    if (window.electronAPI && window.electronAPI.getWebviewPreloadPath) {
+      window.electronAPI.getWebviewPreloadPath().then(path => {
+        setWebviewPreloadPath(`file://${path}`);
+      });
+    }
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
-      if (session) fetchUserData(session.user.id);
+      if (session) {
+        checkOnboarding(session.user.id);
+        fetchUserData(session.user.id);
+      } else {
+        setOnboardingChecked(true);
+      }
     });
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
-      if (session) fetchUserData(session.user.id);
-      else {
+      if (session) {
+        checkOnboarding(session.user.id);
+        fetchUserData(session.user.id);
+      } else {
         setProfiles([]);
         setUserPlan(null);
+        setNeedsOnboarding(false);
+        setOnboardingChecked(true);
       }
     });
 
     return () => subscription.unsubscribe();
   }, []);
+
+  const checkOnboarding = async (userId) => {
+    // Verifica se o usuário já completou o onboarding
+    // Critério: tem pelo menos 1 perfil criado OR flag onboarding_done no user_profile
+    try {
+      const { data: profileData } = await supabase
+        .from('user_profiles')
+        .select('onboarding_done')
+        .eq('id', userId)
+        .maybeSingle();
+
+      const { data: profiles } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('user_id', userId)
+        .limit(1);
+
+      const isDone = profileData?.onboarding_done === true || (profiles && profiles.length > 0);
+      setNeedsOnboarding(!isDone);
+    } catch {
+      setNeedsOnboarding(false); // em caso de erro, não bloqueia
+    } finally {
+      setOnboardingChecked(true);
+    }
+  };
+
+  const handleOnboardingComplete = async () => {
+    // Marca onboarding como concluído
+    try {
+      await supabase
+        .from('user_profiles')
+        .update({ onboarding_done: true })
+        .eq('id', session.user.id);
+    } catch {
+      // silencioso
+    }
+    setNeedsOnboarding(false);
+    fetchUserData(session.user.id);
+  };
 
   const fetchUserData = async (userId) => {
     setLoading(true);
@@ -191,6 +272,107 @@ function App() {
     await supabase.auth.signOut();
   };
 
+  const handleRegister = async (e) => {
+    e.preventDefault();
+    setRegisterError(null);
+
+    // Etapa 1 → 2: valida e-mail e senha
+    if (registerStep === 1) {
+      if (!registerForm.email || !registerForm.password) return;
+      if (registerForm.password.length < 6) {
+        setRegisterError('A senha deve ter pelo menos 6 caracteres.');
+        return;
+      }
+      setRegisterStep(2);
+      return;
+    }
+
+    // Etapa 2 → 3: valida nome
+    if (registerStep === 2) {
+      if (!registerForm.firstName || !registerForm.lastName) return;
+      setRegisterStep(3);
+      return;
+    }
+
+    // Etapa 3: finaliza e cria conta
+    setRegisterLoading(true);
+    try {
+      // 1. Cria usuário no Supabase Auth
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+        email: registerForm.email,
+        password: registerForm.password,
+        options: {
+          data: {
+            first_name: registerForm.firstName,
+            last_name: registerForm.lastName,
+            whatsapp: registerForm.whatsapp,
+            full_name: `${registerForm.firstName} ${registerForm.lastName}`,
+          }
+        }
+      });
+      if (signUpError) throw signUpError;
+
+      const userId = signUpData?.user?.id;
+
+      if (userId) {
+        // 2. Cria perfil do usuário na tabela user_profiles
+        await supabase
+          .from('user_profiles')
+          .insert({
+            id: userId,
+            first_name: registerForm.firstName,
+            last_name: registerForm.lastName,
+            email: registerForm.email,
+            whatsapp: registerForm.whatsapp,
+          })
+          .then(({ error }) => {
+            if (error && !error.message.includes('duplicate') && !error.message.includes('unique')) {
+              console.warn('Aviso ao criar perfil:', error.message);
+            }
+          });
+
+        // 3. Cria assinatura free
+        await supabase
+          .from('subscriptions')
+          .insert({
+            user_id: userId,
+            plan_type: 'free',
+            status: 'active',
+          })
+          .then(({ error }) => {
+            if (error && !error.message.includes('duplicate') && !error.message.includes('unique')) {
+              console.warn('Aviso ao criar assinatura:', error.message);
+            }
+          });
+      }
+
+      setRegisterSuccess(true);
+    } catch (err) {
+      const msg = err.message || '';
+      if (msg.includes('already registered') || msg.includes('already been registered')) {
+        setRegisterError('Este e-mail ja esta cadastrado. Tente fazer login.');
+      } else if (msg.includes('Password should be')) {
+        setRegisterError('A senha deve ter pelo menos 6 caracteres.');
+      } else {
+        setRegisterError('Erro ao criar conta. Tente novamente.');
+      }
+    } finally {
+      setRegisterLoading(false);
+    }
+  };
+
+  const handleRegisterChange = (field, value) => {
+    setRegisterForm(prev => ({ ...prev, [field]: value }));
+  };
+
+  const openRegister = () => {
+    setShowRegister(true);
+    setRegisterStep(1);
+    setRegisterError(null);
+    setRegisterSuccess(false);
+    setRegisterForm({ firstName: '', lastName: '', email: '', whatsapp: '', password: '' });
+  };
+
   const [tabsData, setTabsData] = useState(() => {
     const saved = localStorage.getItem('whatsapp-tabs');
     return saved ? JSON.parse(saved) : {};
@@ -228,7 +410,7 @@ function App() {
 
     const { data, error } = await supabase
       .from('profiles')
-      .insert([{ name: newProfileName }])
+      .insert([{ name: newProfileName, user_id: session.user.id }])
       .select()
       .single();
 
@@ -362,12 +544,22 @@ function App() {
   const activeTabId = activeTabs[activeProfileId] || 'whatsapp';
   const activeTab = currentTabs.find(t => t.id === activeTabId);
 
+  // ── Mostrar onboarding se necessário ─────────────────────
+  if (session && onboardingChecked && needsOnboarding) {
+    return (
+      <Onboarding
+        session={session}
+        onComplete={handleOnboardingComplete}
+      />
+    );
+  }
+
   return (
     <div className="app-container">
       {/* Top Title Bar (Tabs) */}
       <div className="top-title-bar">
         <div className="app-logo-title-bar">
-          <img src="/app-icon.ico" alt="Multi-Zap" />
+          <img src="app-logo.png" alt="Assistencialize" />
         </div>
         {!session ? (
           <div className="tab-bar">
@@ -416,53 +608,245 @@ function App() {
 
       {!session ? (
         <div className="login-screen">
-          <div className="login-card">
-            <div className="login-icon">
-              <span className="material-symbols-outlined fill">shield</span>
-            </div>
-            <h2>Bem-vindo de volta</h2>
-            <p>Acesse sua conta para continuar navegando com segurança.</p>
-            
-            <form onSubmit={handleLogin}>
-              <div className="input-group">
-                <label>Login/Email</label>
-                <div className="input-with-icon">
-                  <span className="material-symbols-outlined">mail</span>
-                  <input 
-                    type="email" 
-                    placeholder="exemplo@email.com" 
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    required
-                  />
-                </div>
-              </div>
-
-              <div className="input-group">
-                <div className="label-row">
-                  <label>Senha</label>
-                  <a href="#" className="forgot-password">Esqueceu a senha?</a>
-                </div>
-                <div className="input-with-icon">
-                  <span className="material-symbols-outlined">lock</span>
-                  <input 
-                    type="password" 
-                    placeholder="........" 
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                  />
-                  <span className="material-symbols-outlined eye-icon">visibility</span>
-                </div>
-              </div>
-
-              {error && <div className="login-error">{error}</div>}
-
-              <button type="submit" className="login-submit-btn" disabled={loading}>
-                {loading ? 'Carregando...' : 'Acessar agora'}
-              </button>
-            </form>
+          {/* Fundo: cobre toda a tela */}
+          <div className="login-left">
+            <img src="login-bg.png" alt="Assistencialize" className="login-bg-img" />
           </div>
+
+          {/* Card sobreposto à direita */}
+          <div className="login-right">
+            <div className="login-card">
+              <div className="login-brand">
+                <img src="app-logo.png" alt="Logo" className="login-logo" />
+                <span className="login-brand-name">Assistencialize</span>
+              </div>
+
+              <h2 className="login-title">Bem-vindo de volta!</h2>
+              <p className="login-subtitle">Acesse sua conta e continue transformando atendimentos em experiências incríveis.</p>
+
+              <form onSubmit={handleLogin}>
+                <div className="input-group">
+                  <label>E-mail</label>
+                  <div className="input-with-icon">
+                    <span className="material-symbols-outlined">mail</span>
+                    <input
+                      type="email"
+                      placeholder="seu@email.com"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="input-group">
+                  <div className="label-row">
+                    <label>Senha</label>
+                    <a href="#" className="forgot-password">Esqueceu sua senha?</a>
+                  </div>
+                  <div className="input-with-icon">
+                    <span className="material-symbols-outlined">lock</span>
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      placeholder="••••••••"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      required
+                    />
+                    <span
+                      className="material-symbols-outlined eye-icon"
+                      onClick={() => setShowPassword(p => !p)}
+                    >
+                      {showPassword ? 'visibility_off' : 'visibility'}
+                    </span>
+                  </div>
+                </div>
+
+                {error && <div className="login-error">{error}</div>}
+
+                <button type="submit" className="login-submit-btn" disabled={loading}>
+                  {loading ? 'Entrando...' : 'Entrar na minha conta'}
+                </button>
+
+                <p className="login-footer-text">
+                  Ainda não tem uma conta?{' '}
+                  <button
+                    type="button"
+                    className="login-contact-link"
+                    onClick={() => openRegister()}
+                  >
+                    Crie sua conta
+                  </button>
+                </p>
+              </form>
+            </div>
+          </div>
+
+          {/* Modal de Cadastro — Multi-step */}
+          {showRegister && (
+            <div className="register-overlay" onClick={() => setShowRegister(false)}>
+              <div className="register-modal" onClick={e => e.stopPropagation()}>
+                <button className="register-close" onClick={() => setShowRegister(false)}>
+                  <span className="material-symbols-outlined">close</span>
+                </button>
+
+                {/* Header */}
+                <div className="register-header">
+                  <img src="app-logo.png" alt="Logo" className="login-logo" />
+                  <span className="login-brand-name">Assistencialize</span>
+                </div>
+
+                {registerSuccess ? (
+                  <div className="register-success">
+                    <span className="material-symbols-outlined" style={{fontSize: '52px', color: '#0d7377'}}>check_circle</span>
+                    <h3>Conta criada com sucesso!</h3>
+                    <p>Verifique seu e-mail para confirmar o cadastro e depois faça login.</p>
+                    <button className="login-submit-btn" onClick={() => setShowRegister(false)} style={{marginTop: '8px'}}>
+                      Ir para o login
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    {/* Barra de progresso */}
+                    <div className="register-progress">
+                      {[1, 2, 3].map(s => (
+                        <div key={s} className={`register-step-dot ${registerStep >= s ? 'active' : ''}`} />
+                      ))}
+                    </div>
+
+                    {/* Etapa 1: E-mail + Senha */}
+                    {registerStep === 1 && (
+                      <form onSubmit={handleRegister} className="register-form">
+                        <h2 className="register-title">Crie sua conta</h2>
+                        <p className="register-subtitle">Comece com seu e-mail e uma senha segura.</p>
+
+                        <div className="input-group">
+                          <label>E-mail</label>
+                          <div className="input-with-icon">
+                            <span className="material-symbols-outlined">mail</span>
+                            <input
+                              type="email"
+                              placeholder="seu@email.com"
+                              value={registerForm.email}
+                              onChange={e => handleRegisterChange('email', e.target.value)}
+                              required
+                              autoFocus
+                            />
+                          </div>
+                        </div>
+
+                        <div className="input-group">
+                          <label>Senha de acesso</label>
+                          <div className="input-with-icon">
+                            <span className="material-symbols-outlined">lock</span>
+                            <input
+                              type={showRegisterPassword ? 'text' : 'password'}
+                              placeholder="Mínimo 6 caracteres"
+                              value={registerForm.password}
+                              onChange={e => handleRegisterChange('password', e.target.value)}
+                              minLength={6}
+                              required
+                            />
+                            <span
+                              className="material-symbols-outlined eye-icon"
+                              onClick={() => setShowRegisterPassword(p => !p)}
+                            >
+                              {showRegisterPassword ? 'visibility_off' : 'visibility'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {registerError && <div className="login-error">{registerError}</div>}
+
+                        <button type="submit" className="login-submit-btn">
+                          Criar conta
+                        </button>
+                      </form>
+                    )}
+
+                    {/* Etapa 2: Nome + Sobrenome */}
+                    {registerStep === 2 && (
+                      <form onSubmit={handleRegister} className="register-form">
+                        <h2 className="register-title">Como chamamos você?</h2>
+                        <p className="register-subtitle">Nos diga seu nome para personalizar sua experiência.</p>
+
+                        <div className="register-row">
+                          <div className="input-group">
+                            <label>Nome</label>
+                            <input
+                              type="text"
+                              placeholder="Seu nome"
+                              value={registerForm.firstName}
+                              onChange={e => handleRegisterChange('firstName', e.target.value)}
+                              required
+                              autoFocus
+                            />
+                          </div>
+                          <div className="input-group">
+                            <label>Sobrenome</label>
+                            <input
+                              type="text"
+                              placeholder="Seu sobrenome"
+                              value={registerForm.lastName}
+                              onChange={e => handleRegisterChange('lastName', e.target.value)}
+                              required
+                            />
+                          </div>
+                        </div>
+
+                        {registerError && <div className="login-error">{registerError}</div>}
+
+                        <div className="register-nav">
+                          <button type="button" className="register-back-btn" onClick={() => setRegisterStep(1)}>
+                            <span className="material-symbols-outlined">arrow_back</span>
+                            Voltar
+                          </button>
+                          <button type="submit" className="login-submit-btn register-next-btn">
+                            Continuar
+                          </button>
+                        </div>
+                      </form>
+                    )}
+
+                    {/* Etapa 3: WhatsApp */}
+                    {registerStep === 3 && (
+                      <form onSubmit={handleRegister} className="register-form">
+                        <h2 className="register-title">Seu WhatsApp</h2>
+                        <p className="register-subtitle">Informe seu número para que nossa equipe possa entrar em contato.</p>
+
+                        <div className="input-group">
+                          <label>WhatsApp</label>
+                          <div className="input-with-icon">
+                            <span className="material-symbols-outlined">phone</span>
+                            <input
+                              type="tel"
+                              placeholder="(51) 99999-9999"
+                              value={registerForm.whatsapp}
+                              onChange={e => handleRegisterChange('whatsapp', e.target.value)}
+                              required
+                              autoFocus
+                            />
+                          </div>
+                        </div>
+
+                        {registerError && <div className="login-error">{registerError}</div>}
+
+                        <div className="register-nav">
+                          <button type="button" className="register-back-btn" onClick={() => setRegisterStep(2)}>
+                            <span className="material-symbols-outlined">arrow_back</span>
+                            Voltar
+                          </button>
+                          <button type="submit" className="login-submit-btn register-next-btn" disabled={registerLoading}>
+                            {registerLoading ? 'Finalizando...' : 'Finalizar cadastro'}
+                          </button>
+                        </div>
+                      </form>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         <>
@@ -500,7 +884,7 @@ function App() {
                     <div className={`plan-badge-mini ${userPlan.plan_type === 'paid' ? 'mini-paid' : ''}`}>
                       <div className="mini-selo-icon">
                         <img 
-                          src={userPlan.plan_type === 'paid' ? "/profile_creation_illustration.png" : "/mulher.png"} 
+                          src="profile_creation_illustration.png" 
                           alt="Selo" 
                         />
                       </div>
@@ -508,18 +892,24 @@ function App() {
                         {userPlan.plan_type === 'paid' ? 'Secretária Profissional' : 'Selo Desbravadora'}
                       </span>
                       {userPlan.plan_type !== 'paid' ? (
-                        <>
-                          <div className="mini-progress-wrap">
-                            <div 
-                              className="mini-progress-fill" 
-                              style={{ width: `${(profiles.length / userPlan.max_instances) * 100}%` }}
-                            ></div>
-                          </div>
-                          <span className="mini-plan-count">{profiles.length}/{userPlan.max_instances}</span>
-                          <button className="mini-upgrade-btn">Obter Pro</button>
-                        </>
+                        profiles.some(p => p.whatsapp_connected) ? (
+                          <>
+                            <div className="mini-progress-wrap">
+                              <div 
+                                className="mini-progress-fill" 
+                                style={{ width: `${(profiles.length / userPlan.max_instances) * 100}%` }}
+                              ></div>
+                            </div>
+                            <span className="mini-plan-count">{profiles.length}/{userPlan.max_instances}</span>
+                            <button className="mini-upgrade-btn">Obter Pro</button>
+                          </>
+                        ) : (
+                          <span className="mini-plan-count" style={{ fontWeight: 500, color: '#898d91', marginLeft: '8px' }}>
+                            Aguardando Conexão
+                          </span>
+                        )
                       ) : (
-                        <span className="mini-plan-count" style={{ fontWeight: 300, color: '#db2777' }}>PRO</span>
+                        <span className="mini-plan-count" style={{ fontWeight: 800, color: '#066dfe' }}>PRO</span>
                       )}
                     </div>
                   )}
@@ -605,19 +995,30 @@ function App() {
                       onClick={() => setActiveProfileId(profile.id)}
                     >
                       <div className="profile-avatar-wrap">
-                        <span className="profile-initials">
-                          {(() => {
-                            const name = profile.name || "";
-                            const parts = name.trim().split(/\s+/);
-                            if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-                            return parts[0][0]?.toUpperCase() || "?";
-                          })()}
-                        </span>
+                        {profile.avatar_url ? (
+                          <img src={profile.avatar_url} alt={profile.name} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
+                        ) : (
+                          <span className="profile-initials">
+                            {(() => {
+                              const name = profile.name || "";
+                              const parts = name.trim().split(/\s+/);
+                              if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+                              return parts[0][0]?.toUpperCase() || "?";
+                            })()}
+                          </span>
+                        )}
                       </div>
                       <div className="profile-text">
                         <span className="profile-name">{profile.name}</span>
-                        <span className="profile-status">
-                          {isActive ? 'Active' : (hasUnread ? 'Nova Mensagem' : 'Inativo')}
+                        <span className="profile-status" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          {(profile.business_start && profile.business_end) ? (
+                            <>
+                              <span className="material-symbols-outlined" style={{ fontSize: '12px' }}>schedule</span>
+                              {profile.business_start} às {profile.business_end}
+                            </>
+                          ) : (
+                            isActive ? 'Ativo' : (hasUnread ? 'Nova Mensagem' : 'Inativo')
+                          )}
                         </span>
                       </div>
                       {isActive ? (
@@ -647,7 +1048,7 @@ function App() {
                     </button>
                     
                     <div className="modal-header-image">
-                      <img src="/profile_creation_illustration.png" alt="Crie um novo perfil" />
+                      <img src="profile_creation_illustration.png" alt="Crie um novo perfil" />
                     </div>
 
                     <div className="modal-body">
@@ -693,6 +1094,7 @@ function App() {
                           profileId={profile.id}
                           tab={tab}
                           isActive={activeProfileId === profile.id && pActiveTabId === tab.id}
+                          preloadPath={webviewPreloadPath}
                           onUnreadChange={handleUnreadChange}
                           onTitleChange={handleTitleChange}
                           onUrlChange={handleUrlChange}

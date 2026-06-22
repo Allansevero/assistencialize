@@ -1,4 +1,4 @@
-const { app, BrowserWindow, session, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, session, ipcMain, dialog, nativeImage } = require('electron');
 const path = require('path');
 const { autoUpdater } = require('electron-updater');
 
@@ -63,6 +63,13 @@ function createWindow() {
     },
   });
 
+  // Força o ícone na taskbar do Windows (necessário em modo dev)
+  if (process.platform === 'win32') {
+    const iconPath = path.join(__dirname, '../public/app-icon.ico');
+    const icon = nativeImage.createFromPath(iconPath);
+    mainWindow.setIcon(icon);
+  }
+
   // Não precisamos mais do setMenu(null) pois o titleBarStyle hidden já esconde.
   // Mas pode ser mantido por segurança.
   mainWindow.setMenu(null);
@@ -84,8 +91,23 @@ function createWindow() {
 app.whenReady().then(() => {
   // Necessário para que o ícone apareça corretamente na barra de tarefas do Windows
   if (process.platform === 'win32') {
-    app.setAppUserModelId('com.assistencialize.multizap');
+    app.setAppUserModelId('com.assistencialize.app');
   }
+
+  // Interceptar a criação de sessões para aplicar o User Agent correto (Garante login Google)
+  const handleHeaders = (details, callback) => {
+    details.requestHeaders['User-Agent'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+    // Remove o cabeçalho que identifica o WebView em qualquer lugar
+    delete details.requestHeaders['X-Requested-With'];
+    callback({ cancel: false, requestHeaders: details.requestHeaders });
+  };
+
+  session.defaultSession.webRequest.onBeforeSendHeaders(handleHeaders);
+
+  // Aplicar para TODAS as novas sessões (inclusive as dos perfis/partitions)
+  app.on('session-created', (sess) => {
+    sess.webRequest.onBeforeSendHeaders(handleHeaders);
+  });
   
   createWindow();
   checkUpdates(); // Inicia a busca por atualizações
@@ -114,4 +136,9 @@ ipcMain.handle('clear-session-cache', async (event, partitionId) => {
     console.error('Error clearing session data:', error);
     return { success: false, error: error.message };
   }
+});
+
+// IPC handler para obter o caminho do preload do webview
+ipcMain.handle('get-webview-preload-path', () => {
+  return path.join(__dirname, 'webview-preload.js');
 });

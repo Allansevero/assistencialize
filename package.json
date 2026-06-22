@@ -1,8 +1,8 @@
 {
-  "name": "multi-zap",
+  "name": "assistencialize",
   "private": true,
-  "version": "1.0.0",
-  "description": "Gerenciador multi-contas de WhatsApp",
+  "version": "1.0.1",
+  "description": "Assistencialize - Transformando atendimentos em experiencias incriveis",
   "author": "SeveroAllan",
   "main": "electron/main.js",
   "repository": {
@@ -18,9 +18,9 @@
     "electron:build": "vite build && electron-builder"
   },
   "build": {
-    "appId": "com.assistencialize.multizap",
-    "productName": "Multi-Zap",
-    "icon": "build/icon.png",
+    "appId": "com.assistencialize.app",
+    "productName": "Assistencialize",
+    "icon": "public/app-logo.png",
     "directories": {
       "output": "release"
     },
@@ -37,7 +37,7 @@
       "package.json"
     ],
     "win": {
-      "icon": "build/icon.png",
+      "icon": "public/app-logo.png",
       "target": [
         {
           "target": "nsis",
@@ -52,12 +52,12 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Multi-Zap",
-      "uninstallDisplayName": "Multi-Zap",
+      "shortcutName": "Assistencialize",
+      "uninstallDisplayName": "Assistencialize",
       "runAfterFinish": true
     },
     "mac": {
-      "icon": "build/icon.png",
+      "icon": "public/app-logo.png",
       "category": "public.app-category.productivity",
       "target": [
         "dmg",
@@ -92,6 +92,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
+    "app-builder-bin": "^5.0.0-alpha.12",
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
     "electron": "^34.0.0",
@@ -100,6 +101,7 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.5.0",
+    "png-to-ico": "^3.0.1",
     "vite": "^8.0.10",
     "wait-on": "^9.0.5"
   }
