@@ -1,0 +1,58 @@
+name: Build & Release Windows
+
+on:
+  push:
+    tags:
+      - 'v*'          # Dispara quando você criar uma tag como v1.0.2, v1.1.0, etc.
+  workflow_dispatch:  # Permite rodar manualmente pela aba Actions do GitHub
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      # 1. Baixar o código
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      # 2. Configurar Node.js
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # 3. Instalar dependências
+      - name: Instalar dependências
+        run: npm ci
+
+      # 4. Build Vite + Electron Builder (gera o instalador .exe)
+      - name: Build instalador Windows
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false   # Sem certificado digital (sem aviso de custo)
+        run: npm run electron:build
+
+      # 5. Fazer upload do instalador como artifact (sempre disponível)
+      - name: Upload instalador como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Assistencialize-Windows-Installer
+          path: |
+            release/**/*.exe
+            release/**/*.yml
+          retention-days: 30
+
+      # 6. Criar Release no GitHub com o instalador (só quando tem tag)
+      - name: Criar Release no GitHub
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/**/*.exe
+            release/**/*.yml
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}

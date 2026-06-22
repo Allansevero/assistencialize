@@ -7,7 +7,7 @@
   "main": "electron/main.js",
   "repository": {
     "type": "git",
-    "url": "https://github.com/SeveroAllan/assistencia.alize.git"
+    "url": "https://github.com/Allansevero/assistencialize.git"
   },
   "scripts": {
     "dev": "vite",
@@ -27,8 +27,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "SeveroAllan",
-        "repo": "assistencia.alize"
+        "owner": "Allansevero",
+        "repo": "assistencialize"
       }
     ],
     "files": [
