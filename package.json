@@ -1,7 +1,7 @@
 {
   "name": "assistencialize",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.0.3",
   "description": "Assistencialize - Transformando atendimentos em experiencias incriveis",
   "author": "SeveroAllan",
   "main": "electron/main.js",
